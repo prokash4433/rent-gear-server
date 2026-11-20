@@ -60,6 +60,24 @@ app.delete('/equipments/:id', async(req, res) =>{
    res.send(result);
 })
 
+//update 
+app.patch('/equipments/:id', async (req, res) => {
+   const id = req.params.id;
+   const query = { _id: new ObjectId(id) };
+   const { rentalPrice, quantity } = req.body;
+
+   const updateDoc = {
+      $set: {
+         rentalPrice: Number(rentalPrice),
+         quantity: Number(quantity),
+      },
+   };
+
+   const result = await equipments.updateOne(query, updateDoc);
+   res.send(result);
+});
+
+
 app.listen(port, () => {
           console.log(`rent gear is running on port ${port}`)
 })
