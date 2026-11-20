@@ -25,16 +25,26 @@ export async function connectToMongoDB() {
 const connectedClient = await connectToMongoDB();
 const database = connectedClient.db('rent-gear');
 const users = database.collection('user');
+const equipments = database.collection('equipments');
 
 app.get('/', (req, res) => {
           res.send('rent gear is gearing')
 })
 
+//user reated apis
 app.get('/users', async(req, res)=>{
    const cursor = users.find({});
    const result = await cursor.toArray();
    res.send(result);
 } )
+
+
+//equipment related apis
+app.post('/equipments', async(req,res) =>{
+   const equipmentData = req.body;
+   const result = await equipments.insertOne(equipmentData) ;
+   res.send(result);
+})
 
 app.listen(port, () => {
           console.log(`rent gear is running on port ${port}`)
