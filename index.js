@@ -70,7 +70,6 @@ app.get('/users', async(req, res)=>{
 } )
 
 
-//equipment related apis
 app.get('/equipments', async(req, res)=>{
    try {
       // Prottek filter alada condition hisebe jome, shob diye final query toiri hobe.
@@ -147,6 +146,32 @@ app.get('/equipments', async(req, res)=>{
       res.status(500).send({ error: 'Could not load equipments' });
    }
 })
+
+// Ekta nirdishto equipment er details (details page er jonno).
+app.get('/equipments/:id', async (req, res) => {
+   try {
+      const id = req.params.id;
+      if (!ObjectId.isValid(id)) {
+         return res.status(400).send({ error: 'Invalid equipment id' });
+      }
+      const equipment = await equipments.findOne({ _id: new ObjectId(id) });
+      if (!equipment) {
+         return res.status(404).send({ error: 'Equipment not found' });
+      }
+
+      // Owner er naam dorkar (owner card dekhate).
+      let ownerName = '';
+      if (equipment.ownerEmail) {
+         const owner = await users.findOne({ email: equipment.ownerEmail });
+         ownerName = owner?.name || '';
+      }
+
+      res.send({ ...equipment, ownerName });
+   } catch (error) {
+      console.error('GET /equipments/:id failed:', error);
+      res.status(500).send({ error: 'Could not load equipment' });
+   }
+});
 
 app.post('/equipments', async(req,res) =>{
    const equipmentData = req.body;
