@@ -125,21 +125,27 @@ app.get('/equipments', async(req, res)=>{
 
       // Sort: price sort e aggregation lagbe, karon price mixed type.
       const sort = oneParam(req.query.sort);
-      let cursor;
+
+      // Limit: ?limit=6 dile MongoDB $limit diye shudhu 6ta result ferot jabe
+      // (featured section er jonno). Limit na ba galat hole shob result jabe.
+      const limitValue = Number.parseInt(oneParam(req.query.limit), 10);
+      const limit = Number.isInteger(limitValue) && limitValue > 0 ? Math.min(limitValue, 100) : 0;
+
+      // Ekta pipeline: match -> sort (lagle) -> limit (lagle).
+      const pipeline = [{ $match: filter }];
       if (sort === 'price-asc' || sort === 'price-desc') {
-         cursor = equipments.aggregate([
-            { $match: filter },
+         // Price mixed type (string/number) -> $toDouble diye sort korte hobe.
+         pipeline.push(
             { $addFields: { _price: { $toDouble: { $ifNull: ['$rentalPrice', '0'] } } } },
             { $sort: { _price: sort === 'price-asc' ? 1 : -1 } },
-         ]);
+         );
       } else if (sort === 'newest') {
          // Notun document er _id boro -> _id descending mane notun age.
-         cursor = equipments.find(filter).sort({ _id: -1 });
-      } else {
-         cursor = equipments.find(filter);
+         pipeline.push({ $sort: { _id: -1 } });
       }
+      if (limit) pipeline.push({ $limit: limit });
 
-      const result = await cursor.toArray();
+      const result = await equipments.aggregate(pipeline).toArray();
       res.send(result);
    } catch (error) {
       console.error('GET /equipments failed:', error);
