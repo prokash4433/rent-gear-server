@@ -1,7 +1,13 @@
 import express from 'express';
 import cors from 'cors'
-import { MongoClient, ObjectId } from 'mongodb';
+import { ObjectId } from 'mongodb';
 import 'dotenv/config'
+import { connectToMongoDB, users, equipments, favourites } from './db.js';
+import { verifyToken } from './middleware/verifyToken.js';
+import { verifyRenter } from './middleware/verifyRenter.js';
+import { verifyOwner } from './middleware/verifyOwner.js';
+import { verifyAdmin } from './middleware/verifyAdmin.js';
+
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -10,23 +16,9 @@ const port = process.env.PORT || 5000;
 app.use(express.json());
 app.use(cors());
 
-const client = new MongoClient(`mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.oc3n5pn.mongodb.net/`);
-
-export async function connectToMongoDB() {
-          try {
-                    await client.connect();
-                    console.log("You successfully connected to MongoDB!");
-                    return client;
-          } catch (err) {
-                    console.dir(err);
-          }
-}
-
-const connectedClient = await connectToMongoDB();
-const database = connectedClient.db('rent-gear');
-const users = database.collection('user');
-const equipments = database.collection('equipments');
-const favourites = database.collection('favourites');
+// Re-exported so anything importing the old entrypoint keeps working
+// (the connection itself now lives in db.js, shared with the auth middleware).
+export { connectToMongoDB };
 
 // User input diye regex bananor age special characters safe kore rakhe,
 // jeno query torey na jay (regex validation).
@@ -58,19 +50,36 @@ const categoryLabels = {
    vehicles: 'Vehicles & Transportation',
 };
 
+/**
+ * Listing-er owner (ba admin) hole-i price/quantity/status change kora jabe.
+ * JWT theke asha email diye document-er ownerEmail er sathe match kore.
+ */
+function canManageEquipment(user, equipment) {
+   if (!user || !equipment) return false;
+   if (user.role === 'admin') return true;
+   const ownerEmail = typeof equipment.ownerEmail === 'string' ? equipment.ownerEmail.trim().toLowerCase() : '';
+   return Boolean(ownerEmail) && ownerEmail === String(user.email ?? '').trim().toLowerCase();
+}
+
 app.get('/', (req, res) => {
           res.send('rent gear is gearing')
 })
 
-//user reated apis
-app.get('/users', async(req, res)=>{
-   const cursor = users.find({});
-   const result = await cursor.toArray();
-   res.send(result);
-} )
+//user reated apis — admin only (JWT + role required).
+app.get('/users', verifyAdmin, async(req, res)=>{
+   try {
+      const cursor = users.find({});
+      const result = await cursor.toArray();
+      res.send(result);
+   } catch (error) {
+      console.error('GET /users failed:', error);
+      res.status(500).send({ error: 'Could not load users' });
+   }
+})
 
 
-app.get('/equipments', async(req, res)=>{
+// Equipment catalogue — signed-in users only (JWT required).
+app.get('/equipments', verifyToken, async(req, res)=>{
    try {
       // Prottek filter alada condition hisebe jome, shob diye final query toiri hobe.
       const conditions = [];
@@ -147,8 +156,8 @@ app.get('/equipments', async(req, res)=>{
    }
 })
 
-// Ekta nirdishto equipment er details (details page er jonno).
-app.get('/equipments/:id', async (req, res) => {
+// Ekta nirdishto equipment er details (details page er jonno) — JWT required.
+app.get('/equipments/:id', verifyToken, async (req, res) => {
    try {
       const id = req.params.id;
       if (!ObjectId.isValid(id)) {
@@ -173,46 +182,105 @@ app.get('/equipments/:id', async (req, res) => {
    }
 });
 
-app.post('/equipments', async(req,res) =>{
-   const equipmentData = req.body;
-   const result = await equipments.insertOne(equipmentData) ;
-   res.send(result);
+// Notun listing — owner role lage, ar ownerEmail JWT er user-i thakbe
+// (ake jonno onno kew listing korte parbe na).
+app.post('/equipments', verifyOwner, async(req,res)=>{
+   try {
+      const equipmentData = { ...req.body, ownerEmail: req.user.email };
+      const result = await equipments.insertOne(equipmentData);
+      res.send(result);
+   } catch (error) {
+      console.error('POST /equipments failed:', error);
+      res.status(500).send({ error: 'Could not create equipment' });
+   }
 })
 
-//delete apis
-app.delete('/equipments/:id', async(req, res) =>{
-   const id = req.params.id;
-   const queary = {_id: new ObjectId(id)};
-   const result = await equipments.deleteOne(queary);
-   res.send(result);
+//delete apis — nijer listing (ba admin) delete korte parbe.
+app.delete('/equipments/:id', verifyToken, async(req, res)=>{
+   try {
+      const id = req.params.id;
+      if (!ObjectId.isValid(id)) {
+         return res.status(400).send({ error: 'Invalid equipment id' });
+      }
+      const equipment = await equipments.findOne({ _id: new ObjectId(id) });
+      if (!equipment) {
+         return res.status(404).send({ error: 'Equipment not found' });
+      }
+      if (!canManageEquipment(req.user, equipment)) {
+         return res.status(403).send({
+            error: 'Access denied: you can only delete your own equipment.',
+            code: 'NOT_EQUIPMENT_OWNER',
+         });
+      }
+      const result = await equipments.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
+   } catch (error) {
+      console.error('DELETE /equipments/:id failed:', error);
+      res.status(500).send({ error: 'Could not delete equipment' });
+   }
 })
 
-//update 
-app.patch('/equipments/:id', async (req, res) => {
-   const id = req.params.id;
-   const query = { _id: new ObjectId(id) };
-   const { rentalPrice, quantity } = req.body;
+//update — nijer listing (ba admin) update korte parbe.
+app.patch('/equipments/:id', verifyToken, async (req, res) => {
+   try {
+      const id = req.params.id;
+      if (!ObjectId.isValid(id)) {
+         return res.status(400).send({ error: 'Invalid equipment id' });
+      }
+      const equipment = await equipments.findOne({ _id: new ObjectId(id) });
+      if (!equipment) {
+         return res.status(404).send({ error: 'Equipment not found' });
+      }
+      if (!canManageEquipment(req.user, equipment)) {
+         return res.status(403).send({
+            error: 'Access denied: you can only update your own equipment.',
+            code: 'NOT_EQUIPMENT_OWNER',
+         });
+      }
 
-   const updateDoc = {
-      $set: {
-         rentalPrice: Number(rentalPrice),
-         quantity: Number(quantity),
-      },
-   };
+      // Status shudhu admin change korte parbe (approve / reject).
+      const { rentalPrice, quantity, status } = req.body;
+      if (status !== undefined && req.user.role !== 'admin') {
+         return res.status(403).send({
+            error: 'Access denied: only admins can change approval status.',
+            code: 'INSUFFICIENT_ROLE',
+         });
+      }
 
-   const result = await equipments.updateOne(query, updateDoc);
-   res.send(result);
+      // Jeno undefined diye price/quantity NaN hoye na jay — field thaklei set.
+      const updateDoc = {};
+      if (rentalPrice !== undefined) updateDoc.rentalPrice = Number(rentalPrice);
+      if (quantity !== undefined) updateDoc.quantity = Number(quantity);
+      if (status !== undefined) updateDoc.status = status;
+      updateDoc.updatedAt = new Date();
+
+      if (Object.keys(updateDoc).length === 1) {
+         return res.status(400).send({ error: 'No valid fields to update' });
+      }
+
+      const result = await equipments.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
+      res.send(result);
+   } catch (error) {
+      console.error('PATCH /equipments/:id failed:', error);
+      res.status(500).send({ error: 'Could not update equipment' });
+   }
 });
 
 
-//favourite related apis
-app.get('/favourites', async (req, res) => {
+//favourite related apis — renter (customer) role lage, nijei record.
+app.get('/favourites', verifyRenter, async (req, res) => {
    try {
       const userEmail = oneParam(req.query.userEmail);
       if (!userEmail) {
          return res.status(400).send({ error: 'userEmail is required' });
       }
-      const result = await favourites.find({ userEmail }).toArray();
+      if (userEmail.toLowerCase() !== String(req.user.email).toLowerCase()) {
+         return res.status(403).send({
+            error: 'Access denied: you can only read your own favourites.',
+            code: 'NOT_YOUR_RECORD',
+         });
+      }
+      const result = await favourites.find({ userEmail: req.user.email }).toArray();
       res.send(result);
    } catch (error) {
       console.error('GET /favourites failed:', error);
@@ -220,9 +288,10 @@ app.get('/favourites', async (req, res) => {
    }
 });
 
-app.post('/favourites', async (req, res) => {
+app.post('/favourites', verifyRenter, async (req, res) => {
    try {
-      const { equipmentId, userEmail } = req.body;
+      const { equipmentId } = req.body;
+      const userEmail = req.user.email;
       if (!equipmentId || !userEmail) {
          return res.status(400).send({ error: 'equipmentId and userEmail are required' });
       }
@@ -239,9 +308,10 @@ app.post('/favourites', async (req, res) => {
    }
 });
 
-app.delete('/favourites', async (req, res) => {
+app.delete('/favourites', verifyRenter, async (req, res) => {
    try {
-      const { equipmentId, userEmail } = req.body;
+      const { equipmentId } = req.body;
+      const userEmail = req.user.email;
       if (!equipmentId || !userEmail) {
          return res.status(400).send({ error: 'equipmentId and userEmail are required' });
       }
