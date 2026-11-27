@@ -329,3 +329,4 @@ app.delete('/favourites', verifyRenter, async (req, res) => {
 app.listen(port, () => {
           console.log(`rent gear is running on port ${port}`)
 })
+export default app;
