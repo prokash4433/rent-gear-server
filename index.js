@@ -78,8 +78,10 @@ app.get('/users', verifyAdmin, async(req, res)=>{
 })
 
 
-// Equipment catalogue — signed-in users only (JWT required).
-app.get('/equipments', verifyToken, async(req, res)=>{
+// Equipment catalogue — PUBLIC: the All Equipment page renders for
+// signed-out visitors too, so listing reads need no JWT. Every write
+// (POST/PATCH/DELETE) and the per-item details read stay protected below.
+app.get('/equipments', async(req, res)=>{
    try {
       // Prottek filter alada condition hisebe jome, shob diye final query toiri hobe.
       const conditions = [];
